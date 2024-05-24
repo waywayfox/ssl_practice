@@ -73,6 +73,25 @@ int http_get (int connection, const char *path, const char *host, const char *pr
     return -1;
   }
 
+  if (proxy_user)
+  {
+    int credentials_len = strlen(proxy_user) + strlen(proxy_password) + 1;
+    char *proxy_credentials = malloc(credentials_len);
+    char *auth_string = malloc(((credentials_len * 4) / 3) + 1);
+    sprintf(proxy_credentials, "%s:%s", proxy_user, proxy_password);
+    base64_encode(proxy_credentials, credentials_len, auth_string);
+    sprintf(get_command, "Proxy-Authorization: BASIC %s\r\n", auth_string);
+    if (send(connection, get_command, strlen(get_command), 0) == -1)
+    {
+      free(proxy_credentials);
+      free(auth_string);
+      return -1;
+
+    }
+    free(proxy_credentials);
+    free(auth_string);
+  }
+
   sprintf(get_command, "Connection close\r\n\r\n");
   if (send(connection, get_command, strlen(get_command), 0) == -1)
   {
@@ -126,7 +145,7 @@ int parse_proxy_param(char *proxy_spec, char **proxy_host, int *proxy_port, char
   trailer_sep = strchr(proxy_spec, '/');
   if (trailer_sep)
   {
-    *trailer_sep = '\0'
+    *trailer_sep = '\0';
   }
   colon_sep = strchr(proxy_spec, ':');
   if (colon_sep)
@@ -150,7 +169,7 @@ int parse_proxy_param(char *proxy_spec, char **proxy_host, int *proxy_port, char
   return 1;
 }
 
-int int main(int argc, char *argv[])
+int main(int argc, char *argv[])
 {
   int client_connection;
   char *proxy_host, *proxy_user, *proxy_password;
@@ -228,7 +247,7 @@ int int main(int argc, char *argv[])
   }
   printf("Retrieving  documetn: '%s'\n", path);
 
-  http_get(client_conneciton, path, host, proxy_user, proxy_password);
+  http_get(client_connection, path, host, proxy_host, proxy_user, proxy_password);
   display_result(client_connection);
   printf("shuttting down.\n");
 
