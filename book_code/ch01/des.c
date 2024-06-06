@@ -5,6 +5,8 @@
 #include "des.h"
 #include "hex.h"
 
+#define TEST_DEX
+
 #define DES_BLOCK_SIZE 8 // 64 bits, defined in the standard
 #define EXPANSION_BLOCK_SIZE 6
 #define PC1_KEY_SIZE 7
@@ -17,6 +19,13 @@
     ( array[ ( int ) ( bit / 8 ) ] |= ( 0x80 >> ( bit % 8 ) ) )
 #define CLEAR_BIT( array, bit ) \
     ( array[ ( int ) ( bit / 8 ) ] &= ~( 0x80 >> ( bit % 8 ) ) )
+
+
+typedef enum {
+  OP_ENCRYPT,
+  OP_DECRYPT
+} op_type;
+
 
 static const int ip_table[] = {
    58, 50, 42, 34, 26, 18, 10, 2,
@@ -121,9 +130,9 @@ static void xor( unsigned char *target, const unsigned char *src, int len )
   }
 }
 
-static void permute(unsigned char target[], const unsgined char src[], const int permute_table[], int len)
+static void permute(unsigned char target[], const unsigned char src[], const int permute_table[], int len)
 {
-  int i, j;
+  int i;
   for (i = 0; i < len * 8; i++)
   {
     if (GET_BIT(src, (permute_table[i] - 1)))
@@ -165,15 +174,38 @@ static void rol(unsigned char *target)
 
 }
 
+static void ror(unsigned char *target)
+{
+
+  int carry_left, carry_right;
+
+  carry_right = (target[6] & 0x01) << 3;
+
+  target[6] = (target[6] >> 1) | ((target[5] & 0x01 ) << 7);
+  target[5] = (target[5] >> 1) | ((target[4] & 0x01 ) << 7);
+  target[4] = (target[4] >> 1) | ((target[3] & 0x01 ) << 7);
+
+  // special handling for byte 3
+  carry_left = (target[3] & 0x10) << 3;
+  target[3] = (((target[3] >> 1) | ((target[2] & 0x01 ) << 7)) & ~0x08) | carry_right ;
+
+  target[2] = (target[2] >> 1) | ((target[1] & 0x01 ) << 7);
+  target[1] = (target[1] >> 1) | ((target[0] & 0x01 ) << 7);
+  target[0] = (target[0] >> 1) | carry_left;
+}
+
+
+
+
 static void des_block_operate(const unsigned char plaintext[DES_BLOCK_SIZE],
                               unsigned char ciphertext[DES_BLOCK_SIZE],
-                              const unsigned char key[DES_KEY_SIZE])
+                              const unsigned char key[DES_KEY_SIZE], op_type operation)
 {
   // Holding areas; result flows from plaintext, down through these,
   // finally into ciphertext. This could be made more memory effieient
   // by resuing these.
 
-  int round = 0
+  int round = 0;
   unsigned char ip_block[DES_BLOCK_SIZE];
   unsigned char expansion_block[EXPANSION_BLOCK_SIZE];
   unsigned char substitution_block[DES_BLOCK_SIZE / 2];
@@ -184,48 +216,63 @@ static void des_block_operate(const unsigned char plaintext[DES_BLOCK_SIZE],
   unsigned char subkey[SUBKEY_SIZE];
 
   // Initial permutaion
-  permute(ip_block, plaintext, ip_table, DES_BLOCK_SIZE);
+  permute(ip_block, plaintext, ip_table, DES_BLOCK_SIZE); // change the position of plaintext
 
 
   // Key schedule computation
-  permute(pc1key, key, pc1_table, PC1_KEY_SIZE);
+  permute(pc1key, key, pc1_table, PC1_KEY_SIZE); // 64 -> 56
 
-  for (int round = 0; round < 16; round++)
+  for (round = 0; round < 16; round++)
   {
     // "Feistel function" on the first half of the block in 'ip_block'
     // "Expansion". this permutation only looks at the first
     // four bytes (32 bits of ip_block); 16 of these are repeated in "expansion_table"
 
-    permute(expansion_block, ip_block + 4, expansion_table, 6);
+    permute(expansion_block, ip_block + 4, expansion_table, 6); // last half expand 32 -> 48
     //Key mixing
     // rotate both halves of the iniital key
-    rol(pc1key);
-    if (!(round <= 1 || round == 8 || round == 15))
+    if (operation == OP_ENCRYPT)
     {
-      // Rotate twice except in round 1, 2, 9, 16
       rol(pc1key);
+      if (!(round <= 1 || round == 8 || round == 15))
+      {
+        // Rotate twice except in round 1, 2, 9, 16
+        rol(pc1key);
+      }
+    }
+
+    permute(subkey, pc1key, pc2_table, SUBKEY_SIZE);
+
+    if (operation == OP_DECRYPT)
+    {
+      ror(pc1key);
+      if (!(round >= 14 || round == 7 || round == 0))
+      {
+        // Rotate teice expect in rounds 1, 2, 9 & 16
+        ror(pc1key);
+      }
+
     }
 
     xor(expansion_block, subkey, 6);
 
     // Substitution; "copy" from updated expansion block to ciphertext block
     memset((void*)substitution_block, 0, DES_BLOCK_SIZE / 2);
-    substitution_block[0]  = sbox[0][(expansion_block[0] & 0xFC) >> 2] << 4;
-    substitution_block[0] |= sbox[1][(expansion_block[0] & 0x03) << 4] | (expansion_block[1] & 0xF0) >> 4;
 
-    substitution_block[1]  = sbox[2][(expansion_block[1] & 0x0F) << 2 | (expansion_block[2] & 0xC0) >> 6] << 4;
-    substitution_block[1] |= sbox[3][(expansion_block[2] & 0x3F)] ;
+    substitution_block[0]  = sbox[0][(expansion_block[0] & 0xFC) >> 2 ] << 4;
+    substitution_block[0] |= sbox[1][(expansion_block[0] & 0x03) << 4 | ( expansion_block[1] & 0xF0 ) >> 4];
 
+    substitution_block[1]  = sbox[2][(expansion_block[1] & 0x0F) << 2 | ( expansion_block[2] & 0xC0 ) >> 6] << 4;
+    substitution_block[1] |= sbox[3][(expansion_block[2] & 0x3F) ];
 
-    substitution_block[2]  = sbox[4][(expansion_block[3] & 0xFC) >> 2] << 4;
-    substitution_block[2] |= sbox[5][(expansion_block[3] & 0x03) << 4] | (expansion_block[4] & 0xF0) >> 4;
+    substitution_block[2]  = sbox[4][(expansion_block[3] & 0xFC) >> 2 ] << 4;
+    substitution_block[2] |= sbox[5][(expansion_block[3] & 0x03) << 4 | ( expansion_block[4] & 0xF0 ) >> 4];
 
-
-    substitution_block[3]  = sbox[6][(expansion_block[1] & 0x0F) << 2 | (expansion_block[5] & 0xC0) >> 6] << 4;
-    substitution_block[3] |= sbox[7][(expansion_block[5] & 0x3F)] ;
+    substitution_block[3]  = sbox[6][(expansion_block[4] & 0x0F) << 2 | ( expansion_block[5] & 0xC0 ) >> 6] << 4;
+    substitution_block[3] |= sbox[7][(expansion_block[5] & 0x3F) ];
 
     // Permutation
-    permute(pbox_target, substitution_block, p_table, DES_BLOCK_SIZE / 2);
+    permute(pbox_target, substitution_block, p_table, DES_BLOCK_SIZE / 2); // 48 -> 32
 
     // Recombination. XOR the pbox twith left half and then switch sides.
     memcpy((void*) recomb_box, (void*)ip_block, DES_BLOCK_SIZE / 2);
@@ -245,6 +292,183 @@ static void des_block_operate(const unsigned char plaintext[DES_BLOCK_SIZE],
   permute(ciphertext, ip_block, fp_table, DES_BLOCK_SIZE);
 
 }
+
+static void des_operate (const unsigned char *input, int input_len,
+                         unsigned char *output, const unsigned char *iv,
+                         const unsigned char *key, op_type operation,
+                         int triplicate)
+{
+  unsigned char input_block [DES_BLOCK_SIZE];
+  assert( !(input_len % DES_BLOCK_SIZE));
+
+  while (input_len)
+  {
+    memcpy((void*) input_block, (void*) input, DES_BLOCK_SIZE);
+    if (operation == OP_ENCRYPT)
+    {
+      xor(input_block, iv, DES_BLOCK_SIZE); //implement CBC
+      des_block_operate(input_block, output, key, operation);
+      if (triplicate)
+      {
+        memcpy(input_block, output, DES_BLOCK_SIZE);
+        des_block_operate(input_block, output, key + DES_BLOCK_SIZE, OP_DECRYPT);
+
+        memcpy(input_block, output, DES_BLOCK_SIZE);
+        des_block_operate(input_block, output, key + (DES_BLOCK_SIZE * 2), operation);
+      }
+      memcpy((void*)iv, (void*) output, DES_BLOCK_SIZE); // CBC
+
+    }
+    else if (operation == OP_DECRYPT)
+    {
+      if (triplicate)
+      {
+        des_block_operate(input_block, output, key + (DES_BLOCK_SIZE * 2), operation);
+        memcpy(input_block, output, DES_BLOCK_SIZE);
+        des_block_operate(input_block, output, key + DES_BLOCK_SIZE, OP_ENCRYPT);
+        memcpy(input_block, output, DES_BLOCK_SIZE);
+        des_block_operate(input_block, output, key, operation);
+      }
+      else
+      {
+        des_block_operate(input_block, output, key, operation);
+      }
+      xor(output, iv, DES_BLOCK_SIZE);
+      memcpy((void*)iv, (void*) input, DES_BLOCK_SIZE); // CBC
+
+    }
+
+    input += DES_BLOCK_SIZE;
+    output += DES_BLOCK_SIZE;
+    input_len -= DES_BLOCK_SIZE;
+  }
+}
+
+
+void des_encrypt (const unsigned char *plaintext, const int plaintext_len,
+                  unsigned char *ciphertext, const unsigned char *iv, const unsigned char *key)
+{
+  //unsigned char *padded_plaintext;
+  //int padding_len;
+
+  // First, pad the input to a multiple of DES_BLOCK_SIZE
+
+  //padding_len = DES_BLOCK_SIZE - (plaintext_len % DES_BLOCK_SIZE);
+  //padded_plaintext = malloc(plaintext_len + padding_len);
+
+  // This implements PKCS #5 padding.
+  //memset(padded_plaintext, padding_len, plaintext_len + padding_len);
+
+
+  // This implements NIST 800-3A padding
+  //memset(padded_plaintext, 0x0, plaintext_len + padding_len);
+  //padded_plaintext[plaintext_len] = 0x80;
+
+  //memcpy(padded_plaintext, plaintext, plaintext_len);
+
+  //des_operate(padded_plaintext, plaintext_len + padding_len, ciphertext, iv, key, OP_ENCRYPT);
+  des_operate(plaintext, plaintext_len, ciphertext, iv, key, OP_ENCRYPT, 0);
+  //free(padded_plaintext);
+}
+
+void des_decrypt(const unsigned char *ciphertext, const int ciphertext_len, unsigned char *plaintext,
+                 const unsigned char *iv, const unsigned char *key)
+{
+  des_operate(ciphertext, ciphertext_len, plaintext, iv, key, OP_DECRYPT, 0);
+  // Remove any padding ont the end of the input
+  // plaintext[ciphertext_len - plaintext[ciphertext_len - 1]] = 0x0;
+}
+
+void des3_decrypt(const unsigned char *ciphertext, const int ciphertext_len, unsigned char *plaintext,
+                 const unsigned char *iv, const unsigned char *key)
+{
+  des_operate(ciphertext, ciphertext_len, plaintext, iv, key, OP_DECRYPT, 1);
+}
+
+void des3_encrypt (const unsigned char *plaintext, const int plaintext_len,
+                  unsigned char *ciphertext, const unsigned char *iv, const unsigned char *key)
+{
+  des_operate(plaintext, plaintext_len, ciphertext, iv, key, OP_ENCRYPT, 1);
+}
+
+
+
+
+#ifdef TEST_DEX
+int main(int argc, char *argv[])
+{;
+  unsigned char *key;
+  unsigned char *iv;
+  unsigned char *input;
+  int key_len;
+  int iv_len;
+  unsigned char *output;
+  int out_len, input_len;
+
+  if (argc < 4)
+  {
+    fprintf(stderr, "Usage: %s [-e|-d] <key> <iv> <input>\n", argv[0]);
+    exit(0);
+  }
+
+  key_len = hex_decode(argv[2], &key);
+  iv_len = hex_decode(argv[3], &iv);
+  input_len = hex_decode(argv[4], &input);
+
+  //key = argv[1];
+  //iv = argv[2];
+  //input = argv[3];
+
+  out_len = strlen(input);
+  //input_len = strlen(input);
+  output = (unsigned char *) malloc(out_len + 1);
+
+  if (!(strcmp(argv[1], "-e")))
+  {
+    if (key_len == 24)
+    {
+      des3_encrypt(input, input_len, output, iv, key);
+    }
+    else
+    {
+      des_encrypt(input, input_len, output, iv, key);
+    }
+    show_hex(output, out_len);
+  }
+  else if (!(strcmp(argv[1], "-d")))
+  {
+    if (key_len == 24)
+    {
+      des3_decrypt(input, input_len, output, iv, key);
+    }
+    else
+    {
+      des_decrypt(input, input_len, output, iv, key);
+    }
+    show_hex(output, out_len);
+  }
+  else
+  {
+    fprintf(stderr, "Usage: %s [-e|-d] <key> <iv> <input>\n", argv[0]);
+  }
+
+  free(input);
+  free(iv);
+  free(key);
+  free(output);
+
+
+
+  //while (out_len--)
+  //{
+  //  printf("%.02x", *output++);
+  //}
+  //printf("\n");
+  return 0;
+}
+#endif
+
+
 
 
 

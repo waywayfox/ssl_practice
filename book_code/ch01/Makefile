@@ -27,6 +27,12 @@ base64.o: base64.c base64.h
 http.o: http.c base64.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
+des.o: des.c des.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+hex.o: hex.c hex.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
 webserver.o: webserver.c base64.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -36,7 +42,11 @@ http: http.o base64.o
 webserver: webserver.o base64.o
 	$(CC) $(CFLAGS) $^ -o $@
 
+des: des.o hex.o
+	$(CC) $(CFLAGS) $^ -o $@
+
 clean:
 	rm *.o
 	rm http
 	rm webserver
+	rm des
